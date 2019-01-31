@@ -1,28 +1,50 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"text/template"
 
+	"github.com/apex/log"
+	jsonhandler "github.com/apex/log/handlers/json"
 	"github.com/dghubble/gologin"
 	"github.com/dghubble/gologin/github"
 	"github.com/dghubble/sessions"
+	gogithub "github.com/google/go-github/github"
 	"golang.org/x/oauth2"
 	githubOAuth2 "golang.org/x/oauth2/github"
 )
 
+type Orgs []struct {
+	Login            string      `json:"login"`
+	ID               int         `json:"id"`
+	NodeID           string      `json:"node_id"`
+	URL              string      `json:"url"`
+	ReposURL         string      `json:"repos_url"`
+	EventsURL        string      `json:"events_url"`
+	HooksURL         string      `json:"hooks_url"`
+	IssuesURL        string      `json:"issues_url"`
+	MembersURL       string      `json:"members_url"`
+	PublicMembersURL string      `json:"public_members_url"`
+	AvatarURL        string      `json:"avatar_url"`
+	Description      interface{} `json:"description"`
+}
+
 const (
 	sessionName    = "internal-github-login"
 	sessionSecret  = "example cookie signing secret"
-	sessionUserKey = "githubName"
+	sessionUserKey = "GithubName"
 )
 
 // sessionStore encodes and decodes session data stored in signed cookies
 var sessionStore = sessions.NewCookieStore([]byte(sessionSecret), nil)
 var views = template.Must(template.ParseGlob("templates/*.html"))
+
+func init() {
+	log.SetHandler(jsonhandler.Default)
+}
 
 // New returns a new ServeMux with app routes.
 func New() *http.ServeMux {
@@ -53,14 +75,51 @@ func issueSession() http.Handler {
 			return
 		}
 
+		// Check user is part of the Organisation "unee-t", id 31331439
+		member, err := isPartOfOrg(githubUser, 31331439)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if !member {
+			http.Error(w, "Not a member", http.StatusInternalServerError)
+			return
+		}
+
 		// 2. Implement a success handler to issue some form of session
 		session := sessionStore.New(sessionName)
 		session.Values[sessionUserKey] = githubUser.GetName()
-		log.Printf("Github orgs: %#v", githubUser.GetOrganizationsURL())
 		session.Save(w)
 		http.Redirect(w, req, "/profile", http.StatusFound)
 	}
 	return http.HandlerFunc(fn)
+}
+
+func isPartOfOrg(githubUser *gogithub.User, OrgID int) (member bool, err error) {
+
+	res, err := http.Get(githubUser.GetOrganizationsURL())
+	if err != nil {
+		return
+	}
+	defer res.Body.Close()
+
+	var orgs Orgs
+	decoder := json.NewDecoder(res.Body)
+	err = decoder.Decode(&orgs)
+	if err != nil {
+		log.WithError(err).Error("failed to decode response")
+		return
+	}
+	for _, org := range orgs {
+		log.Infof("Org: %s", org.Login)
+		if org.ID == OrgID {
+			return true, err
+		}
+	}
+
+	return
 }
 
 // welcomeHandler shows a welcome message and login button.
@@ -78,15 +137,14 @@ func welcomeHandler(w http.ResponseWriter, req *http.Request) {
 
 // profileHandler shows protected user content.
 func profileHandler(w http.ResponseWriter, req *http.Request) {
-
+	// TODO: be nice if the session was just in the context?
 	session, err := sessionStore.Get(req, sessionName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	log.Printf("Session: %#v", session.Values)
-	views.ExecuteTemplate(w, "profile.html", session.Values[sessionUserKey])
+	log.Infof("Session: %#v", session.Values)
+	views.ExecuteTemplate(w, "profile.html", session.Values)
 
 }
 
@@ -98,6 +156,7 @@ func logoutHandler(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "/", http.StatusFound)
 }
 
+// TODO: Move into middleware?
 // requireLogin redirects unauthenticated users to the login route.
 func requireLogin(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, req *http.Request) {
@@ -123,6 +182,6 @@ func main() {
 	// read credentials from environment variables if available
 	err := http.ListenAndServe(":"+os.Getenv("PORT"), New())
 	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+		log.WithError(err).Fatal("error listening")
 	}
 }
