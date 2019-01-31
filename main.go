@@ -17,7 +17,8 @@ import (
 	githubOAuth2 "golang.org/x/oauth2/github"
 )
 
-type Orgs []struct {
+// Is this modelled somewhere else?
+type GithubOrg struct {
 	Login            string      `json:"login"`
 	ID               int         `json:"id"`
 	NodeID           string      `json:"node_id"`
@@ -30,6 +31,12 @@ type Orgs []struct {
 	PublicMembersURL string      `json:"public_members_url"`
 	AvatarURL        string      `json:"avatar_url"`
 	Description      interface{} `json:"description"`
+}
+
+// curl https://api.github.com/users/kaihendry/orgs # is how I looked up the org ID
+var wanted = GithubOrg{
+	Login: "unee-t",
+	ID:    31331439,
 }
 
 const (
@@ -46,9 +53,21 @@ func init() {
 	log.SetHandler(jsonhandler.Default)
 }
 
+func routeLog(r *http.Request) *log.Entry {
+	l := log.WithFields(log.Fields{
+		"id": r.Header.Get("X-Request-Id"),
+		"ua": r.UserAgent(),
+	})
+	return l
+}
+
 // New returns a new ServeMux with app routes.
 func New() *http.ServeMux {
 	mux := http.NewServeMux()
+
+	// TODO: Ideally want to say that any path redirects to a /login if unauthenticated
+	// i.e. skip the weclomeHandler
+
 	mux.HandleFunc("/", welcomeHandler)
 	mux.Handle("/profile", requireLogin(http.HandlerFunc(profileHandler)))
 	mux.HandleFunc("/logout", logoutHandler)
@@ -59,6 +78,7 @@ func New() *http.ServeMux {
 		RedirectURL:  fmt.Sprintf("https://%s/github/callback", os.Getenv("DOMAIN")),
 		Endpoint:     githubOAuth2.Endpoint,
 	}
+
 	stateConfig := gologin.DefaultCookieConfig
 	mux.Handle("/github/login", github.StateHandler(stateConfig, github.LoginHandler(oauth2Config, nil)))
 	mux.Handle("/github/callback", github.StateHandler(stateConfig, github.CallbackHandler(oauth2Config, issueSession(), nil)))
@@ -68,6 +88,7 @@ func New() *http.ServeMux {
 // issueSession issues a cookie session after successful Github login
 func issueSession() http.Handler {
 	fn := func(w http.ResponseWriter, req *http.Request) {
+		log := routeLog(req)
 		ctx := req.Context()
 		githubUser, err := github.UserFromContext(ctx)
 		if err != nil {
@@ -75,8 +96,8 @@ func issueSession() http.Handler {
 			return
 		}
 
-		// Check user is part of the Organisation "unee-t", id 31331439
-		member, err := isPartOfOrg(githubUser, 31331439)
+		// Check user is part of the wanted Organisation, so it can see internal stuff without WorkLink
+		member, err := isPartOfOrg(githubUser, wanted)
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -84,9 +105,10 @@ func issueSession() http.Handler {
 		}
 
 		if !member {
-			http.Error(w, "Not a member", http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("Not a member of %s", wanted.Login), http.StatusUnauthorized)
 			return
 		}
+		log.WithField("user", githubUser.GetName()).Info("confirmed member")
 
 		// 2. Implement a success handler to issue some form of session
 		session := sessionStore.New(sessionName)
@@ -97,7 +119,7 @@ func issueSession() http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-func isPartOfOrg(githubUser *gogithub.User, OrgID int) (member bool, err error) {
+func isPartOfOrg(githubUser *gogithub.User, Org GithubOrg) (member bool, err error) {
 
 	res, err := http.Get(githubUser.GetOrganizationsURL())
 	if err != nil {
@@ -105,7 +127,7 @@ func isPartOfOrg(githubUser *gogithub.User, OrgID int) (member bool, err error) 
 	}
 	defer res.Body.Close()
 
-	var orgs Orgs
+	var orgs []GithubOrg
 	decoder := json.NewDecoder(res.Body)
 	err = decoder.Decode(&orgs)
 	if err != nil {
@@ -113,8 +135,8 @@ func isPartOfOrg(githubUser *gogithub.User, OrgID int) (member bool, err error) 
 		return
 	}
 	for _, org := range orgs {
-		log.Infof("Org: %s", org.Login)
-		if org.ID == OrgID {
+		log.WithField("org", org.Login).Info("part of")
+		if org.ID == Org.ID {
 			return true, err
 		}
 	}
@@ -124,34 +146,40 @@ func isPartOfOrg(githubUser *gogithub.User, OrgID int) (member bool, err error) 
 
 // welcomeHandler shows a welcome message and login button.
 func welcomeHandler(w http.ResponseWriter, req *http.Request) {
+	log := routeLog(req)
 	if req.URL.Path != "/" {
 		http.NotFound(w, req)
 		return
 	}
 	if isAuthenticated(req) {
+		log.Info("authenticated")
 		http.Redirect(w, req, "/profile", http.StatusFound)
 		return
 	}
+	log.Warn("unauthenticated")
 	views.ExecuteTemplate(w, "home.html", nil)
 }
 
 // profileHandler shows protected user content.
 func profileHandler(w http.ResponseWriter, req *http.Request) {
+	log := routeLog(req)
 	// TODO: be nice if the session was just in the context?
 	session, err := sessionStore.Get(req, sessionName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Infof("Session: %#v", session.Values)
+	log.Infof("profile, session: %#v", session.Values)
 	views.ExecuteTemplate(w, "profile.html", session.Values)
 
 }
 
 // logoutHandler destroys the session on POSTs and redirects to home.
 func logoutHandler(w http.ResponseWriter, req *http.Request) {
+	log := routeLog(req)
 	if req.Method == "POST" {
 		sessionStore.Destroy(w, sessionName)
+		log.Warn("logging out")
 	}
 	http.Redirect(w, req, "/", http.StatusFound)
 }
@@ -171,9 +199,12 @@ func requireLogin(next http.Handler) http.Handler {
 
 // isAuthenticated returns true if the user has a signed session cookie.
 func isAuthenticated(req *http.Request) bool {
+	log := routeLog(req)
 	if _, err := sessionStore.Get(req, sessionName); err == nil {
+		log.Info("isAuthenticated: true")
 		return true
 	}
+	log.Info("isAuthenticated: false")
 	return false
 }
 
