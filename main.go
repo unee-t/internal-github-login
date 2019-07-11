@@ -2,6 +2,7 @@ package login
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"text/template"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/apex/log"
 	gogithub "github.com/google/go-github/github"
+	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
 	"golang.org/x/oauth2"
 	githubOAuth2 "golang.org/x/oauth2/github"
@@ -51,8 +53,8 @@ func routeLog(r *http.Request) *log.Entry {
 }
 
 // GithubOrgOnly returns a new ServeMux with app routes.
-func GithubOrgOnly() *http.ServeMux {
-	mux := http.NewServeMux()
+func GithubOrgOnly() *mux.Router {
+	mux := mux.NewRouter()
 
 	mux.Handle("/profile", RequireUneeT(http.HandlerFunc(profileHandler)))
 
@@ -61,12 +63,13 @@ func GithubOrgOnly() *http.ServeMux {
 	oauth2Config := &oauth2.Config{
 		ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
 		ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
-		// RedirectURL:  fmt.Sprintf("https://%s/github/callback", os.Getenv("DOMAIN")),
-		RedirectURL: "http://localhost:3000/github/callback",
-		Endpoint:    githubOAuth2.Endpoint,
+		RedirectURL:  fmt.Sprintf("https://%s/github/callback", os.Getenv("DOMAIN")),
+		// RedirectURL: "http://localhost:3000/github/callback",
+		Endpoint: githubOAuth2.Endpoint,
 	}
 
-	stateConfig := gologin.DebugOnlyCookieConfig
+	// stateConfig := gologin.DebugOnlyCookieConfig
+	stateConfig := gologin.DefaultCookieConfig
 	mux.Handle("/github/login", github.StateHandler(stateConfig, github.LoginHandler(oauth2Config, nil)))
 	mux.Handle("/github/callback", github.StateHandler(stateConfig, github.CallbackHandler(oauth2Config, issueSession(), nil)))
 	return mux
