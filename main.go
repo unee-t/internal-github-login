@@ -85,14 +85,15 @@ func issueSession() http.Handler {
 
 		// Check user is part of the wanted Organisation, so it can see internal stuff without WorkLink
 		member, err := isPartOfOrg(githubUser, wanted)
-
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
 		if !member {
-			views.ExecuteTemplate(w, "notPartOfOrg.html", wanted)
+			err := views.ExecuteTemplate(w, "notPartOfOrg.html", wanted)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		log.WithField("user", githubUser.GetName()).Info("confirmed member")
@@ -178,7 +179,10 @@ func RequireUneeT(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, req *http.Request) {
 		if !isAuthenticated(req) {
 			log.Warn("unauthenticated")
-			views.ExecuteTemplate(w, "unauthenticated.html", nil)
+			err := views.ExecuteTemplate(w, "unauthenticated.html", nil)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		next.ServeHTTP(w, req)
