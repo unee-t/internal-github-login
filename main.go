@@ -107,6 +107,7 @@ func issueSession() http.Handler {
 		// Is there a better way to define these
 		store.Options.HttpOnly = true
 		store.Options.Secure = true
+		store.Options.MaxAge = 3600
 
 		session.Values[sessionUserKey] = githubUser.GetName()
 		err = session.Save(req, w)
@@ -199,7 +200,7 @@ func isAuthenticated(req *http.Request) bool {
 	session, err := store.Get(req, sessionName)
 
 	if err != nil {
-		log.WithError(err).Fatal("failed to retrieve session")
+		log.WithError(err).Warn("failed to retrieve session")
 		return false
 	}
 
