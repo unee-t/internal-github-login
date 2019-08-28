@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"text/template"
 
 	"github.com/dghubble/gologin"
@@ -178,10 +179,10 @@ func logoutHandler(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "/", http.StatusFound)
 }
 
-// RequireUneeT redirects unauthenticated users to the login route.
+// RequireUneeT redirects unauthenticated users to the whitelist /github/login routes
 func RequireUneeT(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, req *http.Request) {
-		if !isAuthenticated(req) {
+		if !strings.HasPrefix(req.URL.Path, "/github") && !isAuthenticated(req) {
 			log.Warn("unauthenticated")
 			err := views.ExecuteTemplate(w, "unauthenticated.html", nil)
 			if err != nil {
